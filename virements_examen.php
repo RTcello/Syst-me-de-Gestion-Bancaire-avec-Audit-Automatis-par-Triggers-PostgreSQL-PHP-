@@ -82,17 +82,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 error_log("ERREUR: Nom client vide");
             } else {
                 try {
-                    // Vérifier si le numéro de compte existe déjà
-                    $check_stmt = $pdo->prepare("SELECT COUNT(*) as count FROM client WHERE \"n°compte\" = ?");
+                    // Vérifier si le numéro de compte existe déjà (insensible à la casse)
+                    $check_stmt = $pdo->prepare("SELECT COUNT(*) as count FROM client WHERE LOWER(\"n°compte\") = LOWER(?)");
                     $check_stmt->execute([$n_compte]);
                     $exists = $check_stmt->fetch()['count'] > 0;
                     
                     if ($exists) {
                         $error = "Ce numéro de compte existe déjà. Veuillez en choisir un autre.";
                         error_log("ERREUR: N° Compte '$n_compte' déjà existant");
-                        // Rediriger avec l'erreur pour l'afficher dans le pop-up
-                        header("Location: virements_examen.php?error=" . urlencode($error) . "&show_form=1");
-                        exit;
                     } else {
                         $stmt = $pdo->prepare("INSERT INTO client (\"n°compte\", nomclient, solde) VALUES (?, ?, ?)");
                         $result = $stmt->execute([$n_compte, $nom_client, $solde_initial]);
@@ -119,8 +116,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Modification d'un virement
         if ($action === 'update_virement') {
-            $stmt = $pdo->prepare("UPDATE virement SET \"n°compte\" = ?, Montant = ? WHERE \"n°virement\" = ?");
-            $stmt->execute([$_POST['compte'], $_POST['montant'], $_POST['numero_virement']]);
+            $stmt = $pdo->prepare("UPDATE virement SET \"n°compte\" = ?, Montant = ?, datevirement = ? WHERE \"n°virement\" = ?");
+            $stmt->execute([$_POST['compte'], $_POST['montant'], $_POST['date_virement'], $_POST['numero_virement']]);
             $message = "Virement modifié avec succès !";
         }
         
@@ -137,7 +134,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Récupérer les données
-$clients = $pdo->query("SELECT * FROM client ORDER BY \"n°compte\" DESC")->fetchAll();
+$clients = $pdo->query("SELECT * FROM client ORDER BY date_creation DESC, \"n°compte\" DESC")->fetchAll();
 $virements = $pdo->query("SELECT v.*, c.nomclient FROM virement v LEFT JOIN client c ON v.\"n°compte\" = c.\"n°compte\" ORDER BY v.\"n°virement\" DESC")->fetchAll();
 
 // Calculer les statistiques pour le style de l'audit
@@ -167,7 +164,7 @@ $total_montant_virements = array_sum(array_column($virements, 'Montant'));
                         </svg>
                     </div>
                     <div>
-                        <h1 class="text-xl font-semibold text-gray-900">BankAudit Pro</h1>
+                        <h1 class="text-xl font-semibold text-gray-900">BankAudit</h1>
                         <p class="text-sm text-gray-600">Gestion des Virements</p>
                     </div>
                 </div>
@@ -378,7 +375,7 @@ $total_montant_virements = array_sum(array_column($virements, 'Montant'));
                                 <td class="p-2 text-sm"><?php echo date('d/m/Y', strtotime($virement['datevirement'])); ?></td>
                                 <td class="p-2 text-sm">
                                     <div class="flex justify-center space-x-2">
-                                        <button onclick="editVirement('<?php echo htmlspecialchars($virement['n°virement']); ?>', '<?php echo htmlspecialchars($virement['n°compte']); ?>', '<?php echo htmlspecialchars($virement['montant']); ?>')" 
+                                        <button onclick="editVirement('<?php echo htmlspecialchars($virement['n°virement']); ?>', '<?php echo htmlspecialchars($virement['n°compte']); ?>', '<?php echo htmlspecialchars($virement['montant']); ?>', '<?php echo htmlspecialchars($virement['datevirement']); ?>')" 
                                                 class="text-blue-600 hover:text-blue-800">
                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
@@ -404,20 +401,134 @@ $total_montant_virements = array_sum(array_column($virements, 'Montant'));
         </div>
     </main>
 
-    <!-- Formulaire de modification caché -->
-    <form id="editForm" method="POST" style="display: none;">
-        <input type="hidden" name="action" value="update_virement">
-        <input type="hidden" name="numero_virement" id="edit_numero_virement">
-        <input type="hidden" name="compte" id="edit_compte">
-        <input type="hidden" name="montant" id="edit_montant">
-    </form>
+    <!-- Formulaire de modification en pop-up -->
+    <div id="editForm" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 transition-all duration-300" style="display: none;">
+        <div class="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full mx-4 transform transition-all duration-300 scale-95">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-bold text-gray-900">Modifier le Virement</h2>
+                <button onclick="toggleEditForm()" class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <form method="POST" class="space-y-4" onsubmit="return validateEditForm()">
+                <input type="hidden" name="action" value="update_virement">
+                <input type="hidden" name="numero_virement" id="edit_numero_virement">
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">N° Compte</label>
+                    <select name="compte" id="edit_compte" required class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <?php foreach ($clients as $client): ?>
+                            <option value="<?php echo htmlspecialchars($client['n°compte']); ?>">
+                                <?php echo htmlspecialchars($client['n°compte']); ?> - <?php echo htmlspecialchars($client['nomclient']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Montant (Ar)</label>
+                    <input type="number" name="montant" id="edit_montant" step="0.01" min="0" required 
+                           class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Date du Virement</label>
+                    <input type="date" name="date_virement" id="edit_date_virement" required 
+                           class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                
+                <div class="flex space-x-3 pt-4">
+                    <button type="submit" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors transform hover:scale-105">
+                        Modifier le Virement
+                    </button>
+                    <button type="button" onclick="toggleEditForm()" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-medium py-3 px-4 rounded-lg transition-colors transform hover:scale-105">
+                        Annuler
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
 
     <script>
-        function editVirement(numero, compte, montant) {
+        function editVirement(numero, compte, montant, date) {
             document.getElementById('edit_numero_virement').value = numero;
             document.getElementById('edit_compte').value = compte;
             document.getElementById('edit_montant').value = montant;
-            document.getElementById('editForm').submit();
+            document.getElementById('edit_date_virement').value = date;
+            toggleEditForm();
+        }
+        
+        function toggleEditForm() {
+            console.log('🔘 Bouton Modifier cliqué');
+            
+            const form = document.getElementById('editForm');
+            const formContent = form.querySelector('div > div');
+            
+            if (!form) {
+                console.error('❌ ERREUR: Élément #editForm non trouvé');
+                return;
+            }
+            
+            if (form.style.display === 'none' || form.style.display === '') {
+                // Afficher le pop-up
+                form.style.display = 'flex';
+                form.style.opacity = '0';
+                
+                setTimeout(() => {
+                    form.style.opacity = '1';
+                    formContent.style.transform = 'scale(1)';
+                }, 10);
+                
+                // Fermer avec Escape
+                document.addEventListener('keydown', function closeEditForm(e) {
+                    if (e.key === 'Escape') {
+                        toggleEditForm();
+                        document.removeEventListener('keydown', closeEditForm);
+                    }
+                });
+                
+                console.log('✅ Pop-up modification affiché');
+            } else {
+                // Cacher le pop-up
+                form.style.opacity = '0';
+                formContent.style.transform = 'scale(0.95)';
+                
+                setTimeout(() => {
+                    form.style.display = 'none';
+                }, 300);
+                
+                console.log('✅ Pop-up modification masqué');
+            }
+        }
+        
+        function validateEditForm() {
+            const compte = document.getElementById('edit_compte').value.trim();
+            const montant = document.getElementById('edit_montant').value.trim();
+            const date = document.getElementById('edit_date_virement').value.trim();
+            
+            console.log('Validation modification - Compte:', compte, 'Montant:', montant, 'Date:', date);
+            
+            if (!compte) {
+                alert('Le numéro de compte est obligatoire');
+                document.getElementById('edit_compte').focus();
+                return false;
+            }
+            
+            if (!montant || montant <= 0) {
+                alert('Le montant doit être supérieur à 0');
+                document.getElementById('edit_montant').focus();
+                return false;
+            }
+            
+            if (!date) {
+                alert('La date est obligatoire');
+                document.getElementById('edit_date_virement').focus();
+                return false;
+            }
+            
+            return true;
         }
         
         function validateClientForm() {
